@@ -2,4 +2,4 @@
 __pycache__/
 *.pyc
 bot.log
-cloudflare_worker.js
+data/
