@@ -1,5 +1,7 @@
 # Hugging Face Upload Bot
 
+[中文版](README_CN.md) | English
+
 A Telegram bot for uploading files to Hugging Face **Bucket** storage with Cloudflare CDN acceleration.
 
 ## Features
@@ -27,8 +29,8 @@ docker-compose up -d
 - `/help` - Help information
 - `/folder` - Switch folder (images/videos/documents/others)
 - `/folders` - List all folders
-- `/bucket` - Switch bucket (image/nixeu/wolf)
-- `/buckets` - List all available buckets (auto-detected)
+- `/bucket` - Switch bucket (auto-detected from your HF account)
+- `/buckets` - List all available buckets
 - `/status` - Current status
 - `/stats` - Upload statistics
 
@@ -38,12 +40,10 @@ docker-compose up -d
 |----------|-------------|----------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token | Yes |
 | `HF_TOKEN` | Hugging Face API token (auto-detects username and buckets) | Yes |
-| `CDN_BASE_URL` | Cloudflare CDN URL | No |
+| `CDN_BASE_URL` | Cloudflare CDN URL (e.g. `https://cdn.example.com`) | No |
 | `HF_FOLDERS` | Custom folders (comma-separated) | No |
 
 **Note:** No need to configure buckets - they are auto-detected from your HF account.
-
-**Note:** Available buckets are auto-detected from Hugging Face API using `HF_TOKEN`. No manual configuration needed for new buckets.
 
 ## Build Docker Image
 
@@ -55,15 +55,15 @@ docker run -d --name hf-telegram-bot --env-file .env hf-telegram-bot
 ## File Structure
 
 ```
-├── main.go              # Bot source code (Go)
-├── Dockerfile           # Docker build file
-├── docker-compose.yml   # Docker Compose config
-├── cloudflare_worker.js # Cloudflare Worker for CDN
-└── .env                 # Environment variables
+├── main.go                     # Bot source code (Go)
+├── Dockerfile                  # Docker build file
+├── docker-compose.yml          # Docker Compose config
+├── cloudflare_worker.js.template # Cloudflare Worker template
+└── .env                        # Environment variables
 ```
 
 ## CDN URL Format
 
-Short URL: `https://hug.520717.xyz/{folder}/{filename}`
+Short URL: `https://cdn.example.com/{folder}/{filename}`
 
 Maps to: `https://huggingface.co/buckets/{user}/{bucket}/resolve/{folder}/{filename}`

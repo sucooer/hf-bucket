@@ -1,5 +1,7 @@
 # Hugging Face 上传 Bot
 
+[English](README.md) | 中文版
+
 通过 Telegram 上传文件到 Hugging Face **Bucket** 存储，支持 Cloudflare CDN 加速。
 
 ## 功能
@@ -27,8 +29,8 @@ docker-compose up -d
 - `/help` - 帮助信息
 - `/folder` - 切换文件夹（images/videos/documents/others）
 - `/folders` - 查看所有文件夹
-- `/bucket` - 切换存储桶（image/nixeu/wolf）
-- `/buckets` - 查看所有存储桶（自动从 HF API 获取）
+- `/bucket` - 切换存储桶（自动从 HF 账户获取）
+- `/buckets` - 查看所有存储桶
 - `/status` - 当前状态
 - `/stats` - 上传统计
 
@@ -38,12 +40,10 @@ docker-compose up -d
 |------|------|------|
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 是 |
 | `HF_TOKEN` | Hugging Face API Token（自动获取用户名和存储桶） | 是 |
-| `CDN_BASE_URL` | Cloudflare CDN 域名 | 否 |
+| `CDN_BASE_URL` | Cloudflare CDN 域名（如 `https://cdn.example.com`） | 否 |
 | `HF_FOLDERS` | 自定义文件夹（逗号分隔） | 否 |
 
 **注意：** 无需配置存储桶列表，会自动从 HF 账户获取。
-
-**注意：** 可用存储桶从 Hugging Face API 自动获取（使用 HF_TOKEN），新增 bucket 无需手动配置。
 
 ## 构建 Docker 镜像
 
@@ -55,15 +55,15 @@ docker run -d --name hf-telegram-bot --env-file .env hf-telegram-bot
 ## 文件结构
 
 ```
-├── main.go              # Bot 源代码 (Go)
-├── Dockerfile           # Docker 构建文件
-├── docker-compose.yml   # Docker Compose 配置
-├── cloudflare_worker.js # Cloudflare Worker CDN 代理
-└── .env                 # 环境变量
+├── main.go                     # Bot 源代码 (Go)
+├── Dockerfile                  # Docker 构建文件
+├── docker-compose.yml          # Docker Compose 配置
+├── cloudflare_worker.js.template # Cloudflare Worker 模板
+└── .env                        # 环境变量
 ```
 
 ## CDN 链接格式
 
-短链接: `https://hug.520717.xyz/{folder}/{filename}`
+短链接: `https://cdn.example.com/{folder}/{filename}`
 
 对应: `https://huggingface.co/buckets/{user}/{bucket}/resolve/{folder}/{filename}`
