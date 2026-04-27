@@ -1,0 +1,49 @@
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    const user = env.HF_USER || 'your_username';
+    const repoType = env.HF_TYPE || 'datasets';
+    const repoName = env.HF_REPO || 'your_dataset';
+    const branch = env.HF_BRANCH || 'main';
+
+    const match = path.match(/^\/([^\/]+)\/(.+)$/);
+    if (!match) {
+      return new Response("Invalid path format. Use: /folder/filename", { status: 400 });
+    }
+
+    const [, folder, filename] = match;
+    const hfUrl = `https://huggingface.co/${repoType}/${user}/${repoName}/resolve/${branch}/${folder}/${filename}`;
+
+    const cacheKey = new Request(hfUrl, request);
+    const cache = caches.default;
+
+    let response = await cache.match(cacheKey);
+
+    if (response) {
+      response = new Response(response.body, response);
+      response.headers.set('X-Cache-Status', 'HIT');
+      response.headers.set('Access-Control-Allow-Origin', '*');
+      return response;
+    }
+
+    response = await fetch(hfUrl, {
+      method: request.method,
+      headers: request.headers,
+    });
+
+    const responseClone = response.clone();
+
+    if (response.status === 200 && request.method === 'GET') {
+      ctx.waitUntil(cache.put(cacheKey, responseClone));
+    }
+
+    const newResponse = new Response(response.body, response);
+    newResponse.headers.set('Access-Control-Allow-Origin', '*');
+    newResponse.headers.set('X-Cache-Status', 'MISS');
+    newResponse.headers.set('X-Proxy-By', 'Cloudflare-Workers-HF-Proxy');
+
+    return newResponse;
+  },
+};
