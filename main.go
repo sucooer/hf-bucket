@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,14 +29,19 @@ const (
 )
 
 type Config struct {
-	BotToken      string
-	HFToken       string
-	HFUsername    string
-	CDNBaseURL    string
-	Folders       []string
-	Buckets       []string
-	DefaultBucket string
-	StateFile     string
+	BotToken             string
+	HFToken              string
+	HFUsername           string
+	CDNBaseURL           string
+	Folders              []string
+	Buckets              []string
+	DefaultBucket        string
+	StateFile            string
+	AllowedUserIDs       map[int64]struct{}
+	AllowedChatIDs       map[int64]struct{}
+	MaxConcurrentUploads int
+	UploadQueueCapacity  int
+	StateFlushInterval   time.Duration
 }
 
 type Bot struct {
@@ -43,6 +49,7 @@ type Bot struct {
 	state            *StateStore
 	availableBuckets []string
 	hfUsername       string
+	uploadQueue      chan UploadJob
 }
 
 type UserStats struct {
@@ -62,6 +69,19 @@ type StateStore struct {
 	mu       sync.RWMutex
 	filePath string
 	state    persistentState
+	dirty    bool
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
+	interval time.Duration
+}
+
+type UploadJob struct {
+	ChatID      int64
+	UserID      int64
+	FileName    string
+	Folder      string
+	Bucket      string
+	DownloadURL string
 }
 
 type Update struct {
@@ -144,14 +164,18 @@ type hfWhoAmIResponse struct {
 
 func loadConfig() (Config, error) {
 	cfg := Config{
-		BotToken:      strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		HFToken:       strings.TrimSpace(os.Getenv("HF_TOKEN")),
-		HFUsername:    strings.TrimSpace(os.Getenv("HF_USERNAME")),
-		CDNBaseURL:    strings.TrimRight(strings.TrimSpace(os.Getenv("CDN_BASE_URL")), "/"),
-		Folders:       parseListEnv(os.Getenv("HF_FOLDERS"), defaultFolders),
-		Buckets:       parseListEnv(os.Getenv("HF_BUCKETS"), nil),
-		DefaultBucket: strings.TrimSpace(os.Getenv("HF_DEFAULT_BUCKET")),
-		StateFile:     strings.TrimSpace(os.Getenv("STATE_FILE")),
+		BotToken:             strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
+		HFToken:              strings.TrimSpace(os.Getenv("HF_TOKEN")),
+		HFUsername:           strings.TrimSpace(os.Getenv("HF_USERNAME")),
+		CDNBaseURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("CDN_BASE_URL")), "/"),
+		Folders:              parseListEnv(os.Getenv("HF_FOLDERS"), defaultFolders),
+		Buckets:              parseListEnv(os.Getenv("HF_BUCKETS"), nil),
+		DefaultBucket:        strings.TrimSpace(os.Getenv("HF_DEFAULT_BUCKET")),
+		StateFile:            strings.TrimSpace(os.Getenv("STATE_FILE")),
+		AllowedUserIDs:       parseInt64SetEnv(os.Getenv("TELEGRAM_ALLOWED_USER_IDS")),
+		AllowedChatIDs:       parseInt64SetEnv(os.Getenv("TELEGRAM_ALLOWED_CHAT_IDS")),
+		MaxConcurrentUploads: parsePositiveIntEnv(os.Getenv("MAX_CONCURRENT_UPLOADS"), 2),
+		StateFlushInterval:   parseDurationSecondsEnv(os.Getenv("STATE_FLUSH_INTERVAL_SECONDS"), 2*time.Second),
 	}
 
 	if cfg.BotToken == "" {
@@ -168,6 +192,13 @@ func loadConfig() (Config, error) {
 	}
 	if len(cfg.Folders) == 0 {
 		cfg.Folders = append([]string(nil), defaultFolders...)
+	}
+	if cfg.MaxConcurrentUploads < 1 {
+		cfg.MaxConcurrentUploads = 1
+	}
+	cfg.UploadQueueCapacity = cfg.MaxConcurrentUploads * 4
+	if cfg.UploadQueueCapacity < 8 {
+		cfg.UploadQueueCapacity = 8
 	}
 	return cfg, nil
 }
@@ -201,6 +232,49 @@ func parseListEnv(raw string, fallback []string) []string {
 	return result
 }
 
+func parseInt64SetEnv(raw string) map[int64]struct{} {
+	values := make(map[int64]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			log.Printf("Warning: ignoring invalid int64 value %q", value)
+			continue
+		}
+		values[id] = struct{}{}
+	}
+	return values
+}
+
+func parsePositiveIntEnv(raw string, fallback int) int {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		log.Printf("Warning: invalid positive int %q, using fallback %d", value, fallback)
+		return fallback
+	}
+	return n
+}
+
+func parseDurationSecondsEnv(raw string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 1 {
+		log.Printf("Warning: invalid flush interval %q, using fallback %s", value, fallback)
+		return fallback
+	}
+	return time.Duration(n) * time.Second
+}
+
 func defaultFolder(folders []string) string {
 	for _, folder := range folders {
 		if folder == "others" {
@@ -213,9 +287,11 @@ func defaultFolder(folders []string) string {
 	return "others"
 }
 
-func newStateStore(filePath string) (*StateStore, error) {
+func newStateStore(filePath string, flushInterval time.Duration) (*StateStore, error) {
 	store := &StateStore{
 		filePath: filePath,
+		stopCh:   make(chan struct{}),
+		interval: flushInterval,
 		state: persistentState{
 			UserFolders: make(map[int64]string),
 			UserStats:   make(map[int64]*UserStats),
@@ -224,17 +300,15 @@ func newStateStore(filePath string) (*StateStore, error) {
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return store, nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read state file: %w", err)
 		}
-		return nil, fmt.Errorf("read state file: %w", err)
-	}
-
-	if len(bytes.TrimSpace(data)) == 0 {
-		return store, nil
-	}
-	if err := json.Unmarshal(data, &store.state); err != nil {
-		return nil, fmt.Errorf("decode state file: %w", err)
+	} else {
+		if len(bytes.TrimSpace(data)) > 0 {
+			if err := json.Unmarshal(data, &store.state); err != nil {
+				return nil, fmt.Errorf("decode state file: %w", err)
+			}
+		}
 	}
 	if store.state.UserFolders == nil {
 		store.state.UserFolders = make(map[int64]string)
@@ -242,10 +316,13 @@ func newStateStore(filePath string) (*StateStore, error) {
 	if store.state.UserStats == nil {
 		store.state.UserStats = make(map[int64]*UserStats)
 	}
+
+	store.wg.Add(1)
+	go store.flushLoop()
 	return store, nil
 }
 
-func (s *StateStore) saveLocked() error {
+func (s *StateStore) writeStateLocked() error {
 	if err := os.MkdirAll(filepath.Dir(s.filePath), 0755); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
@@ -262,6 +339,50 @@ func (s *StateStore) saveLocked() error {
 	if err := os.Rename(tmpPath, s.filePath); err != nil {
 		return fmt.Errorf("replace state file: %w", err)
 	}
+	s.dirty = false
+	return nil
+}
+
+func (s *StateStore) markDirtyLocked() {
+	s.dirty = true
+}
+
+func (s *StateStore) flushLocked() error {
+	if !s.dirty {
+		return nil
+	}
+	return s.writeStateLocked()
+}
+
+func (s *StateStore) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushLocked()
+}
+
+func (s *StateStore) flushLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := s.Flush(); err != nil {
+				log.Printf("Failed to flush state: %v", err)
+			}
+		case <-s.stopCh:
+			if err := s.Flush(); err != nil {
+				log.Printf("Failed to flush state during shutdown: %v", err)
+			}
+			return
+		}
+	}
+}
+
+func (s *StateStore) Close() error {
+	close(s.stopCh)
+	s.wg.Wait()
 	return nil
 }
 
@@ -284,7 +405,8 @@ func (s *StateStore) EnsureUser(userID int64, defaultFolder string) error {
 	if !s.ensureUserLocked(userID, defaultFolder) {
 		return nil
 	}
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func (s *StateStore) GetUserFolder(userID int64, defaultFolder string) string {
@@ -301,7 +423,8 @@ func (s *StateStore) SetUserFolder(userID int64, folder, defaultFolder string) e
 	defer s.mu.Unlock()
 	s.ensureUserLocked(userID, defaultFolder)
 	s.state.UserFolders[userID] = folder
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func (s *StateStore) SetUserBucket(userID int64, bucket, defaultFolder string) error {
@@ -309,7 +432,8 @@ func (s *StateStore) SetUserBucket(userID int64, bucket, defaultFolder string) e
 	defer s.mu.Unlock()
 	s.ensureUserLocked(userID, defaultFolder)
 	s.state.UserStats[userID].PreferredBucket = bucket
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func (s *StateStore) GetUserBucket(userID int64, defaultFolder string, availableBuckets []string, fallback string) string {
@@ -334,7 +458,8 @@ func (s *StateStore) RecordAttempt(userID int64, defaultFolder string) error {
 	defer s.mu.Unlock()
 	s.ensureUserLocked(userID, defaultFolder)
 	s.state.UserStats[userID].Total++
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func (s *StateStore) RecordSuccess(userID int64, defaultFolder string) error {
@@ -342,7 +467,8 @@ func (s *StateStore) RecordSuccess(userID int64, defaultFolder string) error {
 	defer s.mu.Unlock()
 	s.ensureUserLocked(userID, defaultFolder)
 	s.state.UserStats[userID].Success++
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func (s *StateStore) RecordFailure(userID int64, defaultFolder string) error {
@@ -350,7 +476,8 @@ func (s *StateStore) RecordFailure(userID int64, defaultFolder string) error {
 	defer s.mu.Unlock()
 	s.ensureUserLocked(userID, defaultFolder)
 	s.state.UserStats[userID].Fail++
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func (s *StateStore) GetUserStats(userID int64, defaultFolder string) UserStats {
@@ -376,7 +503,8 @@ func (s *StateStore) SetOffset(offset int64) error {
 		return nil
 	}
 	s.state.Offset = offset
-	return s.saveLocked()
+	s.markDirtyLocked()
+	return nil
 }
 
 func newBot(cfg Config, state *StateStore) (*Bot, error) {
@@ -401,14 +529,25 @@ func newBot(cfg Config, state *StateStore) (*Bot, error) {
 		availableBuckets = []string{cfg.DefaultBucket}
 	}
 
-	log.Printf("Runtime config: username=%s buckets=%v folders=%v state=%s", username, availableBuckets, cfg.Folders, cfg.StateFile)
+	if len(cfg.AllowedUserIDs) == 0 && len(cfg.AllowedChatIDs) == 0 {
+		log.Printf("Warning: no Telegram allowlist configured; the bot will accept updates from any user or chat")
+	}
 
-	return &Bot{
+	log.Printf("Runtime config: username=%s buckets=%v folders=%v state=%s max_concurrent_uploads=%d", username, availableBuckets, cfg.Folders, cfg.StateFile, cfg.MaxConcurrentUploads)
+
+	bot := &Bot{
 		config:           cfg,
 		state:            state,
 		availableBuckets: availableBuckets,
 		hfUsername:       username,
-	}, nil
+		uploadQueue:      make(chan UploadJob, cfg.UploadQueueCapacity),
+	}
+
+	for i := 0; i < cfg.MaxConcurrentUploads; i++ {
+		go bot.uploadWorker()
+	}
+
+	return bot, nil
 }
 
 func fetchUsername(hfToken string) (string, error) {
@@ -755,6 +894,33 @@ func contains(values []string, target string) bool {
 	return false
 }
 
+func containsID(values map[int64]struct{}, target int64) bool {
+	_, ok := values[target]
+	return ok
+}
+
+func (b *Bot) isAuthorized(chatID, userID int64) bool {
+	if len(b.config.AllowedUserIDs) == 0 && len(b.config.AllowedChatIDs) == 0 {
+		return true
+	}
+	return containsID(b.config.AllowedUserIDs, userID) || containsID(b.config.AllowedChatIDs, chatID)
+}
+
+func (b *Bot) uploadWorker() {
+	for job := range b.uploadQueue {
+		b.processFile(job)
+	}
+}
+
+func (b *Bot) enqueueUpload(job UploadJob) bool {
+	select {
+	case b.uploadQueue <- job:
+		return true
+	default:
+		return false
+	}
+}
+
 func (b *Bot) setUserFolder(userID int64, folder string) bool {
 	if !contains(b.config.Folders, folder) {
 		return false
@@ -795,7 +961,14 @@ func (b *Bot) uploadToHF(localPath, fileName, folder, bucket string) (string, er
 	return fmt.Sprintf("https://huggingface.co/buckets/%s/resolve/%s", repoID, encodedObjectPath), nil
 }
 
-func (b *Bot) processFile(chatID, userID int64, fileName, folder, bucket, downloadURL string) {
+func (b *Bot) processFile(job UploadJob) {
+	chatID := job.ChatID
+	userID := job.UserID
+	fileName := job.FileName
+	folder := job.Folder
+	bucket := job.Bucket
+	downloadURL := job.DownloadURL
+
 	log.Printf("Processing file: %s bucket=%s folder=%s user=%d", fileName, bucket, folder, userID)
 
 	defaultUserFolder := defaultFolder(b.config.Folders)
@@ -932,6 +1105,11 @@ func (b *Bot) handleUpdate(update Update) {
 	userID := actorIDFromMessage(msg)
 	defaultUserFolder := defaultFolder(b.config.Folders)
 
+	if !b.isAuthorized(chatID, userID) {
+		log.Printf("Ignoring unauthorized update from chat=%d user=%d", chatID, userID)
+		return
+	}
+
 	if err := b.state.EnsureUser(userID, defaultUserFolder); err != nil {
 		log.Printf("Failed to persist user state: %v", err)
 	}
@@ -1027,7 +1205,7 @@ func (b *Bot) handleUpdate(update Update) {
 			if cdnValue == "" {
 				cdnValue = "未配置"
 			}
-			text := fmt.Sprintf("⚙️ 当前状态\n\n📦 存储桶: %s\n📁 文件夹: %s\n📂 可用: %s\n🔗 CDN: %s", b.state.GetUserBucket(userID, defaultUserFolder, b.availableBuckets, b.config.DefaultBucket), b.state.GetUserFolder(userID, defaultUserFolder), strings.Join(b.config.Folders, ", "), cdnValue)
+			text := fmt.Sprintf("⚙️ 当前状态\n\n📦 存储桶: %s\n📁 文件夹: %s\n📂 可用: %s\n🔗 CDN: %s\n🚦 并发上传上限: %d", b.state.GetUserBucket(userID, defaultUserFolder, b.availableBuckets, b.config.DefaultBucket), b.state.GetUserFolder(userID, defaultUserFolder), strings.Join(b.config.Folders, ", "), cdnValue, b.config.MaxConcurrentUploads)
 			if err := b.sendMessage(chatID, text); err != nil {
 				log.Printf("Failed to send /status response: %v", err)
 			}
@@ -1100,7 +1278,16 @@ func (b *Bot) handleUpdate(update Update) {
 			return
 		}
 		fileName := sanitizeFileName(doc.FileName, doc.FileUniqueID)
-		go b.processFile(chatID, userID, fileName, folder, bucket, downloadURL)
+		job := UploadJob{ChatID: chatID, UserID: userID, FileName: fileName, Folder: folder, Bucket: bucket, DownloadURL: downloadURL}
+		if !b.enqueueUpload(job) {
+			if err := b.sendMessage(chatID, "❌ 上传队列已满，请稍后再试"); err != nil {
+				log.Printf("Failed to send queue full error: %v", err)
+			}
+			return
+		}
+		if err := b.sendMessage(chatID, "🕓 已加入上传队列: "+fileName); err != nil {
+			log.Printf("Failed to send queue status: %v", err)
+		}
 		return
 	}
 
@@ -1115,7 +1302,16 @@ func (b *Bot) handleUpdate(update Update) {
 			return
 		}
 		fileName := sanitizeFileName(photo.FileUniqueID+".jpg", photo.FileUniqueID+".jpg")
-		go b.processFile(chatID, userID, fileName, folder, bucket, downloadURL)
+		job := UploadJob{ChatID: chatID, UserID: userID, FileName: fileName, Folder: folder, Bucket: bucket, DownloadURL: downloadURL}
+		if !b.enqueueUpload(job) {
+			if err := b.sendMessage(chatID, "❌ 上传队列已满，请稍后再试"); err != nil {
+				log.Printf("Failed to send queue full error: %v", err)
+			}
+			return
+		}
+		if err := b.sendMessage(chatID, "🕓 已加入上传队列: "+fileName); err != nil {
+			log.Printf("Failed to send queue status: %v", err)
+		}
 		return
 	}
 
@@ -1131,7 +1327,16 @@ func (b *Bot) handleUpdate(update Update) {
 		}
 		fallbackName := "video_" + video.FileUniqueID + ".mp4"
 		fileName := sanitizeFileName(video.FileName, fallbackName)
-		go b.processFile(chatID, userID, fileName, folder, bucket, downloadURL)
+		job := UploadJob{ChatID: chatID, UserID: userID, FileName: fileName, Folder: folder, Bucket: bucket, DownloadURL: downloadURL}
+		if !b.enqueueUpload(job) {
+			if err := b.sendMessage(chatID, "❌ 上传队列已满，请稍后再试"); err != nil {
+				log.Printf("Failed to send queue full error: %v", err)
+			}
+			return
+		}
+		if err := b.sendMessage(chatID, "🕓 已加入上传队列: "+fileName); err != nil {
+			log.Printf("Failed to send queue status: %v", err)
+		}
 		return
 	}
 
@@ -1147,7 +1352,16 @@ func (b *Bot) handleUpdate(update Update) {
 		}
 		fallbackName := "audio_" + audio.FileUniqueID + ".mp3"
 		fileName := sanitizeFileName(audio.FileName, fallbackName)
-		go b.processFile(chatID, userID, fileName, folder, bucket, downloadURL)
+		job := UploadJob{ChatID: chatID, UserID: userID, FileName: fileName, Folder: folder, Bucket: bucket, DownloadURL: downloadURL}
+		if !b.enqueueUpload(job) {
+			if err := b.sendMessage(chatID, "❌ 上传队列已满，请稍后再试"); err != nil {
+				log.Printf("Failed to send queue full error: %v", err)
+			}
+			return
+		}
+		if err := b.sendMessage(chatID, "🕓 已加入上传队列: "+fileName); err != nil {
+			log.Printf("Failed to send queue status: %v", err)
+		}
 		return
 	}
 }
@@ -1158,10 +1372,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	state, err := newStateStore(cfg.StateFile)
+	state, err := newStateStore(cfg.StateFile, cfg.StateFlushInterval)
 	if err != nil {
 		log.Fatalf("Failed to load state: %v", err)
 	}
+	defer state.Close()
 
 	bot, err := newBot(cfg, state)
 	if err != nil {
@@ -1194,6 +1409,11 @@ func main() {
 			offset = update.UpdateID + 1
 			if err := state.SetOffset(offset); err != nil {
 				log.Printf("Failed to persist offset: %v", err)
+			}
+		}
+		if len(updates) > 0 {
+			if err := state.Flush(); err != nil {
+				log.Printf("Failed to flush state after update batch: %v", err)
 			}
 		}
 

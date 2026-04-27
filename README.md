@@ -7,6 +7,8 @@ A Telegram bot for uploading files to Hugging Face Buckets with optional Cloudfl
 - Upload images, videos, audio, and documents via Telegram
 - Organize uploads into folders and nested subfolders
 - Generate short CDN links through a Cloudflare Worker proxy
+- Restrict uploads with Telegram user/chat allowlists
+- Limit concurrent uploads with a bounded worker queue
 - Persist user folder selection, preferred bucket, stats, and polling offset
 - Resume cleanly after container restarts
 
@@ -70,6 +72,10 @@ Directory input examples:
 | `HF_DEFAULT_BUCKET` | Fallback bucket when discovery is unavailable | No |
 | `CDN_BASE_URL` | Cloudflare Worker base URL, without trailing slash | No |
 | `HF_FOLDERS` | Allowed top-level folders, comma-separated | No |
+| `TELEGRAM_ALLOWED_USER_IDS` | Allowed Telegram user IDs, comma-separated. If empty, all users are allowed | No |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | Allowed Telegram chat IDs, comma-separated. If empty, all chats are allowed | No |
+| `MAX_CONCURRENT_UPLOADS` | Number of parallel uploads processed at once | No |
+| `STATE_FLUSH_INTERVAL_SECONDS` | Background state flush interval in seconds | No |
 | `STATE_FILE` | JSON state file path for persisted bot state | No |
 
 ## Cloudflare Worker

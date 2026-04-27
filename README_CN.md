@@ -7,6 +7,8 @@
 - 上传图片、视频、音频、文档
 - 支持顶层目录和子目录分类
 - 通过 Cloudflare Worker 生成短链接
+- 支持 Telegram 用户/聊天白名单控制
+- 通过有限 worker 队列限制并发上传
 - 持久化保存用户目录、首选 bucket、统计信息和轮询 offset
 - 容器重启后可继续运行
 
@@ -70,6 +72,10 @@ go run .
 | `HF_DEFAULT_BUCKET` | 无法自动发现 bucket 时使用的默认值 | 否 |
 | `CDN_BASE_URL` | Cloudflare Worker 域名，不要带结尾斜杠 | 否 |
 | `HF_FOLDERS` | 允许使用的顶层文件夹，逗号分隔 | 否 |
+| `TELEGRAM_ALLOWED_USER_IDS` | 允许访问的 Telegram 用户 ID，逗号分隔。不填则允许所有用户 | 否 |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | 允许访问的 Telegram 聊天 ID，逗号分隔。不填则允许所有聊天 | 否 |
+| `MAX_CONCURRENT_UPLOADS` | 同时处理的最大上传并发数 | 否 |
+| `STATE_FLUSH_INTERVAL_SECONDS` | 后台状态落盘间隔，单位秒 | 否 |
 | `STATE_FILE` | 持久化状态文件路径 | 否 |
 
 ## Cloudflare Worker
