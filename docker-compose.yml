@@ -1,0 +1,7 @@
+services:
+  hf-bot:
+    build: .
+    container_name: hf-bot
+    restart: always
+    env_file:
+      - .env
