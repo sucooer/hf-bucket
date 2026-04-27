@@ -1,5 +1,5 @@
-const USER = 'anyaer007';
-const DEFAULT_BUCKET = 'image';
+const USER = 'your_huggingface_username';
+const DEFAULT_BUCKET = 'your_default_bucket';
 
 export default {
   async fetch(request, env, ctx) {
