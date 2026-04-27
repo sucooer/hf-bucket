@@ -5,18 +5,17 @@ WORKDIR /app
 COPY main.go go.mod ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o hf-bot .
 
-FROM alpine:latest
+FROM alpine:3.19
 
 WORKDIR /app
 
-RUN apk --no-cache add ca-certificates
+RUN apk add --no-cache ca-certificates && \
+    adduser -D -h /app appuser && \
+    mkdir -p /app/data && \
+    chown -R appuser:appuser /app
 
-COPY --from=builder /app/hf-bot .
+COPY --from=builder /app/hf-bot /app/hf-bot
 
-ENV TELEGRAM_BOT_TOKEN=
-ENV HF_TOKEN=
-ENV HF_REPO_ID=
-ENV CDN_BASE_URL=
-ENV HF_FOLDERS=images,videos,documents,others
+USER appuser
 
 CMD ["./hf-bot"]

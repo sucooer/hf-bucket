@@ -1,4 +1,5 @@
 .env
 __pycache__/
 *.pyc
-bot.logcloudflare_worker.js
+bot.log
+data/
