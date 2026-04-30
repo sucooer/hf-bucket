@@ -723,9 +723,9 @@ func fetchBuckets(username, hfToken string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var buckets []map[string]interface{}
-	if err := json.Unmarshal(body, &buckets); err != nil {
-		return nil, fmt.Errorf("decode buckets response: %w", err)
+	buckets, err := parseBucketsPayload(body)
+	if err != nil {
+		return nil, err
 	}
 	result := make([]string, 0, len(buckets))
 	seen := make(map[string]struct{})
@@ -749,9 +749,9 @@ func fetchBucketDetails(username, hfToken string) ([]webBucketInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	var buckets []map[string]interface{}
-	if err := json.Unmarshal(body, &buckets); err != nil {
-		return nil, fmt.Errorf("decode buckets response: %w", err)
+	buckets, err := parseBucketsPayload(body)
+	if err != nil {
+		return nil, err
 	}
 	result := make([]webBucketInfo, 0, len(buckets))
 	seen := make(map[string]struct{})
