@@ -5,6 +5,10 @@
 ## 功能
 
 - 上传图片、视频、音频、文档
+- 支持通过本地浏览器直接上传，不经过 Telegram
+- 支持在文件管理器风格页面中浏览已上传文件，并优先通过 CDN 链接访问
+- 支持列表、网格、图片三种视图切换
+- 支持重命名、移动、复制、删除、分享、复制链接、下载等文件操作
 - 支持顶层目录和子目录分类
 - 通过 Cloudflare Worker 生成短链接
 - 支持 Telegram 用户/聊天白名单控制
@@ -43,6 +47,35 @@ set +a
 go run .
 ```
 
+## 本地网页上传
+
+bucket 版本可以选择在同一个 Go 进程里额外暴露一个本地上传页面。
+
+必填配置：
+- `WEB_ENABLED=true`
+- `WEB_PASSWORD=change_me`
+
+可选配置：
+- `WEB_LISTEN_ADDR=:23145`
+- `WEB_BASE_URL=http://127.0.0.1:23145`
+
+示例：
+
+```bash
+cp .env.example .env
+mkdir -p data
+# 编辑 .env，填入 token、bucket 配置和 WEB_PASSWORD
+
+export PATH=/usr/local/go/bin:$PATH
+set -a
+source .env
+set +a
+go run .
+```
+
+然后打开 `http://127.0.0.1:23145/login`。
+登录后，同一页面既可以上传文件，也可以浏览现有文件，并支持列表/网格/图片视图切换和完整文件操作。
+
 ## 命令
 
 - `/start` - 启动 Bot
@@ -77,6 +110,10 @@ go run .
 | `MAX_CONCURRENT_UPLOADS` | 同时处理的最大上传并发数 | 否 |
 | `STATE_FLUSH_INTERVAL_SECONDS` | 后台状态落盘间隔，单位秒 | 否 |
 | `STATE_FILE` | 持久化状态文件路径 | 否 |
+| `WEB_ENABLED` | 是否启用本地浏览器上传页面和 API | 否 |
+| `WEB_LISTEN_ADDR` | 本地上传页面的 HTTP 监听地址 | 否 |
+| `WEB_PASSWORD` | 登录本地上传页面时使用的共享密码 | 否 |
+| `WEB_BASE_URL` | 页面内展示的可选访问地址 | 否 |
 
 ## Cloudflare Worker
 
@@ -95,6 +132,7 @@ Bot 现在生成的 CDN 路径格式为 `/<bucket>/<folder>/<file>`。
 
 `docker-compose.yml` 会把 `./data` 挂载到 `/app/data`，用于保存 Bot 状态。
 镜像内部不再内置任何运行时环境变量默认值，启动时必须通过 `.env`、`--env-file` 或显式 `-e` 参数提供。
+如果要在 Docker 中启用本地上传页面，需要自行发布 HTTP 端口，例如 `-p 23145:23145`。
 
 ```bash
 docker build -t hf-bot .

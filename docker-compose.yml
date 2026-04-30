@@ -7,3 +7,5 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+    ports:
+      - "23145:23145"

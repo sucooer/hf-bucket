@@ -5,6 +5,10 @@ A Telegram bot for uploading files to Hugging Face Buckets with optional Cloudfl
 ## Features
 
 - Upload images, videos, audio, and documents via Telegram
+- Upload directly from a local browser without going through Telegram
+- Browse uploaded files from a file-manager style page using CDN-first links
+- Switch between list, grid, and image views
+- Manage files with rename, move, copy, delete, share, copy-link, and download actions
 - Organize uploads into folders and nested subfolders
 - Generate short CDN links through a Cloudflare Worker proxy
 - Restrict uploads with Telegram user/chat allowlists
@@ -43,6 +47,35 @@ set +a
 go run .
 ```
 
+## Local Web Upload
+
+The bucket version can optionally expose a local upload page from the same Go process.
+
+Required settings:
+- `WEB_ENABLED=true`
+- `WEB_PASSWORD=change_me`
+
+Optional settings:
+- `WEB_LISTEN_ADDR=:23145`
+- `WEB_BASE_URL=http://127.0.0.1:23145`
+
+Example:
+
+```bash
+cp .env.example .env
+mkdir -p data
+# Edit .env with your tokens, bucket settings, and WEB_PASSWORD
+
+export PATH=/usr/local/go/bin:$PATH
+set -a
+source .env
+set +a
+go run .
+```
+
+Then open `http://127.0.0.1:23145/login`.
+After logging in, the same page supports both uploading new files and browsing existing files through CDN links, with list/grid/image view switching and file actions.
+
 ## Commands
 
 - `/start` - Start the bot
@@ -77,6 +110,10 @@ Directory input examples:
 | `MAX_CONCURRENT_UPLOADS` | Number of parallel uploads processed at once | No |
 | `STATE_FLUSH_INTERVAL_SECONDS` | Background state flush interval in seconds | No |
 | `STATE_FILE` | JSON state file path for persisted bot state | No |
+| `WEB_ENABLED` | Enable the local browser upload UI and API | No |
+| `WEB_LISTEN_ADDR` | HTTP listen address for the local upload UI | No |
+| `WEB_PASSWORD` | Shared password used to log into the local upload UI | No |
+| `WEB_BASE_URL` | Optional display URL shown inside the local upload page | No |
 
 ## Cloudflare Worker
 
@@ -95,6 +132,7 @@ Notes:
 
 The compose file mounts `./data` into `/app/data` so bot state survives restarts.
 The image does not embed any default runtime environment variables. Provide them via `.env`, `--env-file`, or explicit `-e` flags.
+If you enable the local upload page in Docker, publish the HTTP port yourself, for example `-p 23145:23145`.
 
 ```bash
 docker build -t hf-bot .
