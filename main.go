@@ -674,6 +674,49 @@ func fetchUsername(hfToken string) (string, error) {
 	return strings.TrimSpace(result.Name), nil
 }
 
+func extractBucketName(bucket map[string]interface{}) string {
+	if id, ok := bucket["id"].(string); ok {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			parts := strings.Split(id, "/")
+			if len(parts) >= 2 {
+				name := strings.TrimSpace(parts[len(parts)-1])
+				if name != "" {
+					return name
+				}
+			}
+			return id
+		}
+	}
+	for _, key := range []string{"name", "bucket", "bucket_name", "slug"} {
+		if v, ok := bucket[key].(string); ok {
+			if name := strings.TrimSpace(v); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func bucketNumberField(bucket map[string]interface{}, keys ...string) float64 {
+	for _, key := range keys {
+		if v, ok := bucket[key].(float64); ok {
+			return v
+		}
+	}
+	return 0
+}
+
+func bucketStringField(bucket map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := bucket[key].(string); ok {
+			if val := strings.TrimSpace(v); val != "" {
+				return val
+			}
+		}
+	}
+	return ""
+}
 func fetchBuckets(username, hfToken string) ([]string, error) {
 	url := fmt.Sprintf("https://huggingface.co/api/buckets/%s", username)
 	body, err := doHFRequestJSON(hfToken, http.MethodGet, url, nil)
@@ -687,15 +730,10 @@ func fetchBuckets(username, hfToken string) ([]string, error) {
 	result := make([]string, 0, len(buckets))
 	seen := make(map[string]struct{})
 	for _, bucket := range buckets {
-		id, ok := bucket["id"].(string)
-		if !ok {
+		name := extractBucketName(bucket)
+		if name == "" {
 			continue
 		}
-		parts := strings.Split(id, "/")
-		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-			continue
-		}
-		name := parts[1]
 		if _, ok := seen[name]; ok {
 			continue
 		}
@@ -718,23 +756,18 @@ func fetchBucketDetails(username, hfToken string) ([]webBucketInfo, error) {
 	result := make([]webBucketInfo, 0, len(buckets))
 	seen := make(map[string]struct{})
 	for _, bucket := range buckets {
-		id, ok := bucket["id"].(string)
-		if !ok {
+		name := extractBucketName(bucket)
+		if name == "" {
 			continue
 		}
-		parts := strings.Split(id, "/")
-		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-			continue
-		}
-		name := parts[1]
 		if _, ok := seen[name]; ok {
 			continue
 		}
 		seen[name] = struct{}{}
 
-		size, _ := bucket["size"].(float64)
-		totalFiles, _ := bucket["totalFiles"].(float64)
-		updatedAt, _ := bucket["updatedAt"].(string)
+		size := bucketNumberField(bucket, "size", "total_size")
+		totalFiles := bucketNumberField(bucket, "totalFiles", "total_files", "num_files")
+		updatedAt := bucketStringField(bucket, "updatedAt", "updated_at", "lastModified", "last_modified")
 
 		result = append(result, webBucketInfo{
 			Name:         name,
@@ -2414,7 +2447,6 @@ function showBucketList() {
   state.currentFolder = '';
   state.currentSubdir = '';
   els.backToBuckets.style.display = 'none';
-  els.browseBucket.style.display = 'none';
   renderBuckets();
 }
 
