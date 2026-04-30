@@ -717,29 +717,6 @@ func bucketStringField(bucket map[string]interface{}, keys ...string) string {
 	}
 	return ""
 }
-
-func parseBucketsPayload(body []byte) ([]map[string]interface{}, error) {
-	var list []map[string]interface{}
-	if err := json.Unmarshal(body, &list); err == nil {
-		return list, nil
-	}
-
-	var wrapped map[string]json.RawMessage
-	if err := json.Unmarshal(body, &wrapped); err != nil {
-		return nil, fmt.Errorf("decode buckets response: %w", err)
-	}
-	for _, key := range []string{"buckets", "data", "items", "results"} {
-		raw, ok := wrapped[key]
-		if !ok {
-			continue
-		}
-		if err := json.Unmarshal(raw, &list); err == nil {
-			return list, nil
-		}
-	}
-	return nil, errors.New("decode buckets response: no bucket list field found")
-}
-
 func fetchBuckets(username, hfToken string) ([]string, error) {
 	url := fmt.Sprintf("https://huggingface.co/api/buckets/%s", username)
 	body, err := doHFRequestJSON(hfToken, http.MethodGet, url, nil)
