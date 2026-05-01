@@ -34,12 +34,10 @@ function resolveTarget(pathname, defaultBucket) {
     return null;
   }
 
-  if (parts.length >= 2) {
-    return {
-      bucket: parts[0],
-      filename: parts.slice(1).join('/'),
-    };
-  }
+  return {
+    bucket: parts[0],
+    filename: parts.slice(1).join('/'),
+  };
 }
 
 export default {
